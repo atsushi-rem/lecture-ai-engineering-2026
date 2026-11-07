@@ -12,7 +12,6 @@
     「第2回の確認問題を出して」のように、
     復習用の問題を求められたときに使う。
     """
-    # 1. load_glossary() から lecture が一致する用語を集める
     terms = [term for term in load_glossary() if term["lecture"] == lecture]
     if not terms:
         available = sorted({term["lecture"] for term in load_glossary()})
@@ -21,10 +20,7 @@
             f"用語集にある回: {', '.join(map(str, available))}"
         )
 
-    # 2. 1 つ選ぶ（random.choice）
     term = random.choice(terms)
-
-    # 3. 問題と答えを文字列で返す（json.dumps など）
     return json.dumps(
         {
             "question": f"次の説明に当てはまる用語は何ですか？\n{term['definition']}",
