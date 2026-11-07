@@ -9,9 +9,10 @@ from pydantic_ai import DeferredToolRequests
 from pydantic_ai.messages import ToolCallPart, ToolReturnPart
 from pydantic_ai.models.test import TestModel
 
-from app.agent import agent
+from app import tools
+from app.agent import agent, run_with_approval
 
-BASE_TOOLS = {"search_glossary", "get_lecture_summary"}
+BASE_TOOLS = {"search_glossary", "get_lecture_summary", "save_learning_log"}
 
 
 def _parts(result, kind):
@@ -40,3 +41,58 @@ def test_glossary_result_reaches_the_model():
         result = agent.run_sync("RAGとは？")
     returns = _parts(result, ToolReturnPart)
     assert returns and returns[0].tool_name == "search_glossary"
+
+
+def test_save_learning_log_waits_for_approval(tmp_path, monkeypatch):
+    monkeypatch.setattr(tools, "LEARNING_LOG_DIR", tmp_path)
+    model = TestModel(call_tools=["save_learning_log"])
+    with agent.override(model=model):
+        pending = agent.run_sync("学習記録を保存してください")
+
+    assert isinstance(pending.output, DeferredToolRequests)
+    assert len(pending.output.approvals) == 1
+    assert not list(tmp_path.iterdir())
+
+    request = pending.output.approvals[0]
+    with agent.override(model=TestModel(call_tools=[])):
+        completed = agent.run_sync(
+            message_history=pending.all_messages(),
+            deferred_tool_results=pending.output.build_results(
+                approvals={request.tool_call_id: True}
+            ),
+        )
+
+    assert completed.output
+    assert len(list(tmp_path.glob("*.json"))) == 1
+
+
+def test_run_with_approval_saves_only_after_user_confirms(tmp_path, monkeypatch):
+    monkeypatch.setattr(tools, "LEARNING_LOG_DIR", tmp_path)
+    model = TestModel(call_tools=["save_learning_log"])
+
+    def confirm(prompt):
+        assert "保存してよいですか" in prompt
+        model.call_tools = []
+        return "y"
+
+    monkeypatch.setattr("builtins.input", confirm)
+    result = run_with_approval(agent, "学習記録を保存してください", model)
+
+    assert not isinstance(result.output, DeferredToolRequests)
+    assert len(list(tmp_path.glob("*.json"))) == 1
+
+
+def test_run_with_approval_does_not_save_when_user_declines(tmp_path, monkeypatch):
+    monkeypatch.setattr(tools, "LEARNING_LOG_DIR", tmp_path)
+    model = TestModel(call_tools=["save_learning_log"])
+
+    def decline(prompt):
+        assert "保存してよいですか" in prompt
+        model.call_tools = []
+        return "n"
+
+    monkeypatch.setattr("builtins.input", decline)
+    result = run_with_approval(agent, "学習記録を保存してください", model)
+
+    assert not isinstance(result.output, DeferredToolRequests)
+    assert not list(tmp_path.iterdir())
